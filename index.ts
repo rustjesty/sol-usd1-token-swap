@@ -34,8 +34,8 @@ const getNextPage = async (paginationToken = null) => {
           ...(paginationToken ? { paginationToken } : {}),
           filters: {
             blockTime: {
-              gte: 1764176000,   // Jan 1, 2025
-              lte: 1764184209    // Jan 31, 2025
+              gte: 1764354435,   // Jan 1, 2025
+              lte: 1764376305    // Jan 31, 2025
             },
 
             status: 'succeeded'  // Only successful transactions
@@ -133,13 +133,6 @@ async function getAllTransactionsFromFirst() {
               }
 
               transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
-              transaction.add(instruction);
 
 
 
@@ -168,7 +161,17 @@ async function getAllTransactionsFromFirst() {
               console.error(`Simulation failed`, simResult.value.err);
             } else {
               console.log(`Simulation success`, simResult.value.logs ?? []);
+
+              // Serialize the signed transaction to raw bytes
+              const rawTransaction = transaction.serialize();
+
+              const txSignature = await connection.sendRawTransaction(rawTransaction);
+
+              // Confirm the transaction
+              const confirmation = await connection.confirmTransaction(txSignature, 'confirmed');
+              console.log(`Closed staging accounts: https://solscan.io/tx/${txSignature}`);
             }
+
 
           }
         }
