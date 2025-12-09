@@ -12,14 +12,15 @@ const HELIUS_URL = "https://mainnet.helius-rpc.com/?api-key=6c89f208-1da7-457d-b
 const programId = new PublicKey("HrmSfAe4ugxGLr7QU2UeAdCVqRR4zCAM1hsyLhV1V89");
 
 export const deriveStagingPDAs = (
-  layers: number,
   payer: PublicKey,
   recipient: PublicKey,
   roundId: anchor.BN,
-): Array<[PublicKey, number]> =>
-  Array.from({ length: layers - 1 }, (_, idx) =>
+): Array<[PublicKey, number]> => {
+  const layers = 5;
+  return Array.from({ length: layers - 1 }, (_, idx) =>
     getStagingPDAWithBump(idx + 1, payer, recipient, roundId)
   );
+}
 
 export const getStagingPDAWithBump = (
   layer: number,

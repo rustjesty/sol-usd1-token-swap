@@ -1,4 +1,4 @@
-import { Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, Transaction, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
@@ -34,8 +34,9 @@ const getNextPage = async (paginationToken = null) => {
           ...(paginationToken ? { paginationToken } : {}),
           filters: {
             blockTime: {
-              gte: 1764354435,   // Jan 1, 2025
-              lte: 1764376305    // Jan 31, 2025
+              gte: 1764956224,   // Jan 1, 2025
+              lte: 1765146627    // Jan 31, 2025
+              
             },
 
             status: 'succeeded'  // Only successful transactions
@@ -61,6 +62,8 @@ async function getAllTransactionsFromFirst() {
 
   const trans = allData
   console.log("trans", trans.length)
+
+  let allInstructions: TransactionInstruction[] = [];
 
   for (let i = 0; i < trans.length; i++) {
     try {
@@ -111,7 +114,7 @@ async function getAllTransactionsFromFirst() {
             const roundId = new anchor.BN(parsed.roundId);
 
 
-            const stagingAccountsWithBumps = deriveStagingPDAs(5, new PublicKey(sender), new PublicKey(receiver), roundId);
+            const stagingAccountsWithBumps = deriveStagingPDAs(new PublicKey(sender), new PublicKey(receiver), roundId);
             const transaction = new Transaction();
             for (let i = 0; i < 4; i++) {
               const stagingPDA = stagingAccountsWithBumps[i][0];
@@ -132,45 +135,30 @@ async function getAllTransactionsFromFirst() {
                 continue;
               }
 
-              transaction.add(instruction);
-
-
-
-              // const tx = await program.methods
-              //   // @ts-ignore
-              //   .closeMultiLayerStaging(layer, roundId)
-              //   .accounts({
-              //     closer: payer.publicKey,       // Anyone can close and receive rent
-              //     staging: stagingPDA,
-              //     originalPayer: new PublicKey(sender),  // Just for PDA derivation
-              //     recipient: new PublicKey(receiver),
-              //   })
-              //   .signers([payer])                // Only closer needs to sign
-              //   .rpc();
-
-              // console.log(`Closed staging${layer}: https://solscan.io/tx/${tx}`);
+              // transaction.add(instruction);
+              allInstructions.push(instruction);
             }
 
-            transaction.feePayer = payer.publicKey;
-            const { blockhash } = await connection.getLatestBlockhash();
-            transaction.recentBlockhash = blockhash;
-            transaction.sign(payer);
+            // transaction.feePayer = payer.publicKey;
+            // const { blockhash } = await connection.getLatestBlockhash();
+            // transaction.recentBlockhash = blockhash;
+            // transaction.sign(payer);
 
-            const simResult = await connection.simulateTransaction(transaction);
-            if (simResult.value.err) {
-              console.error(`Simulation failed`, simResult.value.err);
-            } else {
-              console.log(`Simulation success`, simResult.value.logs ?? []);
+            // const simResult = await connection.simulateTransaction(transaction);
+            // if (simResult.value.err) {
+            //   console.error(`Simulation failed`, simResult.value.err);
+            // } else {
+            //   console.log(`Simulation success`, simResult.value.logs ?? []);
 
-              // Serialize the signed transaction to raw bytes
-              const rawTransaction = transaction.serialize();
+            //   // Serialize the signed transaction to raw bytes
+            //   const rawTransaction = transaction.serialize();
 
-              const txSignature = await connection.sendRawTransaction(rawTransaction);
+            //   const txSignature = await connection.sendRawTransaction(rawTransaction);
 
-              // Confirm the transaction
-              const confirmation = await connection.confirmTransaction(txSignature, 'confirmed');
-              console.log(`Closed staging accounts: https://solscan.io/tx/${txSignature}`);
-            }
+            //   // Confirm the transaction
+            //   const confirmation = await connection.confirmTransaction(txSignature, 'confirmed');
+            //   console.log(`Closed staging accounts: https://solscan.io/tx/${txSignature}`);
+            // }
 
 
           }
@@ -179,6 +167,50 @@ async function getAllTransactionsFromFirst() {
     } catch (error) {
       console.log("error", error)
       continue;
+    }
+  }
+
+  const num_of_trans = Math.ceil(allInstructions.length / 14);
+  console.log("num_of_trans", num_of_trans)
+  console.log("total instructions", allInstructions.length)
+
+  for (let j = 0; j < num_of_trans; j++) {
+    const startIdx = j * 14;
+    const endIdx = Math.min(startIdx + 14, allInstructions.length);
+    const batchInstructions = allInstructions.slice(startIdx, endIdx);
+    
+    console.log(`Processing batch ${j + 1}/${num_of_trans} with ${batchInstructions.length} instructions`);
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+
+    const messageV0 = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: blockhash,
+      instructions: batchInstructions,
+    }).compileToV0Message();
+
+    // 3. Create VersionedTransaction
+    const transaction = new VersionedTransaction(messageV0);
+
+    transaction.sign([payer])
+
+    try {
+      // 5. Send transaction
+      const signature = await connection.sendTransaction(transaction, {
+        maxRetries: 5,
+      });
+
+      console.log(`Transaction ${j + 1}/${num_of_trans} sent: https://solscan.io/tx/${signature}`);
+      
+      // Wait for confirmation
+      const confirmation = await connection.confirmTransaction(signature, 'confirmed');
+      if (confirmation.value.err) {
+        console.error(`Transaction ${j + 1} failed:`, confirmation.value.err);
+      } else {
+        console.log(`Transaction ${j + 1} confirmed successfully`);
+      }
+    } catch (error) {
+      console.error(`Error sending transaction ${j + 1}:`, error);
     }
   }
 }

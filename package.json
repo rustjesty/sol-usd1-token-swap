@@ -3,6 +3,7 @@
   "author": "MrRust",
   "scripts": {
     "start": "ts-node index.ts",
+    "transfer": "ts-node transfer.ts",
     "single": "ts-node oneWalletBundle.ts",
     "close": "ts-node closeLut.ts",
     "gather": "ts-node gather.ts",
