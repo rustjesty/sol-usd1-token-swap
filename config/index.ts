@@ -19,7 +19,6 @@ export const MAIN_KP = Keypair.fromSecretKey(bs58.decode(PRIVATE_KEY));
 
 export const commitment = "confirmed";
 export const HELIUS_URL = "https://mainnet.helius-rpc.com/?api-key=6c89f208-1da7-457d-bce2-19eee95e1330"
-export const programId = new PublicKey("HrmSfAe4ugxGLr7QU2UeAdCVqRR4zCAM1hsyLhV1V89");
-
+export const programId = new PublicKey("BhdU135mdBb1V7jcKdAZoFueNMLMeAtAbBgUZehqRte7");
 
 export const connection = new Connection(HELIUS_URL);

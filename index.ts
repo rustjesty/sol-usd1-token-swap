@@ -8,9 +8,6 @@ import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 import { MAIN_KP, HELIUS_URL, programId, connection } from "./config";
 import { deriveStagingPDAs, getProgram, parseMultiLayerTransfer } from "./utils";
 
-
-
-
 const payer = MAIN_KP;
 export const program = getProgram(payer);
 
@@ -34,9 +31,8 @@ const getNextPage = async (paginationToken = null) => {
           ...(paginationToken ? { paginationToken } : {}),
           filters: {
             blockTime: {
-              gte: 1764956224,   // Jan 1, 2025
-              lte: 1765146627    // Jan 31, 2025
-              
+              gte: 1766514148,   // Jan 1, 2025
+              lte: 1766518394    // Jan 31, 2025
             },
 
             status: 'succeeded'  // Only successful transactions
@@ -51,6 +47,7 @@ const getNextPage = async (paginationToken = null) => {
 };
 
 async function getAllTransactionsFromFirst() {
+  console.log(`${MAIN_KP.publicKey.toBase58()}`)
   do {
     const result: any = await getNextPage(paginationToken);
     allData.push(...result.data);
@@ -83,12 +80,12 @@ async function getAllTransactionsFromFirst() {
         const accountKeys = message.accountKeys;
         // console.log("accountKeys", accountKeys)
         const mixerInstr = instructions.map((inst: any) => {
-          if (accountKeys[inst.programIdIndex] === 'HrmSfAe4ugxGLr7QU2UeAdCVqRR4zCAM1hsyLhV1V89') {
+          if (accountKeys[inst.programIdIndex] === 'BhdU135mdBb1V7jcKdAZoFueNMLMeAtAbBgUZehqRte7') {
             return inst;
           }
         })[0];
 
-        // console.log("mixerInstr", mixerInstr);
+        console.log("mixerInstr.accounts", mixerInstr.accounts);
         sender = accountKeys[mixerInstr.accounts[0]];
         receiver = accountKeys[mixerInstr.accounts[mixerInstr.accounts.length - 2]];
 

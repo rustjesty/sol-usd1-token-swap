@@ -9,7 +9,7 @@ import mixerIDL from "./idl/mixer.idl.json";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 import { connection, MAIN_KP } from "./config";
 const HELIUS_URL = "https://mainnet.helius-rpc.com/?api-key=6c89f208-1da7-457d-bce2-19eee95e1330"
-const programId = new PublicKey("HrmSfAe4ugxGLr7QU2UeAdCVqRR4zCAM1hsyLhV1V89");
+const programId = new PublicKey("BhdU135mdBb1V7jcKdAZoFueNMLMeAtAbBgUZehqRte7");
 
 export const deriveStagingPDAs = (
   payer: PublicKey,

@@ -12,7 +12,6 @@ import { Mixer } from "./idl/mixer.idl";
 import mixerIDL from "./idl/mixer.idl.json";
 import { connection, MAIN_KP } from "./config";
 
-
 const commitment = "confirmed";
 // Helper function to create program instance with correct payer
 const getProgram = (payer: Keypair): Program<Mixer> => {

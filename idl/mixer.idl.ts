@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/mixer.json`.
  */
 export type Mixer = {
-  "address": "HrmSfAe4ugxGLr7QU2UeAdCVqRR4zCAM1hsyLhV1V89",
+  "address": "BhdU135mdBb1V7jcKdAZoFueNMLMeAtAbBgUZehqRte7",
   "metadata": {
     "name": "mixer",
     "version": "0.1.0",
@@ -73,68 +73,6 @@ export type Mixer = {
       "args": []
     },
     {
-      "name": "mediated_transfer",
-      "discriminator": [
-        238,
-        164,
-        229,
-        23,
-        136,
-        64,
-        140,
-        92
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "staging",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  116,
-                  97,
-                  103,
-                  105,
-                  110,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "payer"
-              },
-              {
-                "kind": "account",
-                "path": "recipient"
-              }
-            ]
-          }
-        },
-        {
-          "name": "recipient",
-          "writable": true
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "transfer_lamports",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "multi_layer_transfer",
       "discriminator": [
         33,
@@ -189,6 +127,12 @@ export type Mixer = {
         {
           "name": "round_id",
           "type": "u64"
+        },
+        {
+          "name": "layers_data",
+          "type": {
+            "option": "bytes"
+          }
         }
       ]
     }
@@ -238,6 +182,11 @@ export type Mixer = {
       "code": 6008,
       "name": "InvalidLayerCount",
       "msg": "Invalid layer count, must be between 2 and 5"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidEncryptedDataLength",
+      "msg": "Invalid encrypted data length. Expected 96 bytes."
     }
   ]
 }
