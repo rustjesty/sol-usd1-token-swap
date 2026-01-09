@@ -4,7 +4,7 @@ import { Program } from "@coral-xyz/anchor";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { program } from ".";
 
-import { Mixer } from "./idl/mixer.idl";
+import { Mixer } from "./idl/raydium-clmm.idl";
 import mixerIDL from "./idl/mixer.idl.json";
 import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
 import { connection, MAIN_KP } from "./config";

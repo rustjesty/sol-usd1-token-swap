@@ -1,215 +1,59 @@
-import { Connection, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, Transaction, TransactionInstruction } from "@solana/web3.js";
-import bs58 from "bs58";
-import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { Mixer } from "./idl/mixer.idl";
-import mixerIDL from "./idl/mixer.idl.json";
-import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
-import { MAIN_KP, HELIUS_URL, programId, connection } from "./config";
-import { deriveStagingPDAs, getProgram, parseMultiLayerTransfer } from "./utils";
+import {
+  ApiV3PoolInfoConcentratedItem,
+  ClmmKeys,
+  ComputeClmmPoolInfo,
+  PoolUtils,
+  ReturnTypeFetchMultiplePoolTickArrays,
+  RAYMint,
+  TxVersion,
+} from '@raydium-io/raydium-sdk-v2'
 
-const payer = MAIN_KP;
-export const program = getProgram(payer);
+import BN from 'bn.js'
+import { connection, initSdk } from './config'
 
-let paginationToken = null;
-let allData: any[] = [];
+import { CLMM_PROGRAM_ID, DEVNET_PROGRAM_ID } from '@raydium-io/raydium-sdk-v2'
+import { swap } from './swap'
+import { PublicKey } from '@solana/web3.js'
 
-const getNextPage = async (paginationToken = null) => {
-  const response = await fetch(HELIUS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'getTransactionsForAddress',
-      params: [
-        programId.toBase58(),
-        {
-          transactionDetails: 'full',
-          sortOrder: 'asc',
-          limit: 100,
-          ...(paginationToken ? { paginationToken } : {}),
-          filters: {
-            blockTime: {
-              gte: 1766514148,   // Jan 1, 2025
-              lte: 1766518394    // Jan 31, 2025
-            },
+const VALID_PROGRAM_ID = new Set([CLMM_PROGRAM_ID.toBase58(), DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID.toBase58()])
+export const txVersion = TxVersion.V0 // or TxVersion.LEGACY
+export const isValidClmm = (id: string) => VALID_PROGRAM_ID.has(id)
 
-            status: 'succeeded'  // Only successful transactions
-          }
-        }
-      ]
-    })
-  });
+const main = async () => {
+  const raydium = await initSdk()
+  const poolId = 'AQAGYQsdU853WAKhXM79CgNdoyhrRwXvYHX6qrDyC1FS'
+  const inputMint = "So11111111111111111111111111111111111111112"
 
-  const data: any = await response.json();
-  return data.result;
-};
-
-async function getAllTransactionsFromFirst() {
-  console.log(`${MAIN_KP.publicKey.toBase58()}`)
-  do {
-    const result: any = await getNextPage(paginationToken);
-    allData.push(...result.data);
-    paginationToken = result.paginationToken;
-
-    console.log(`Fetched ${result.data.length} transactions, total: ${allData.length}`);
-  } while (paginationToken);
-
-
-  const trans = allData
-  console.log("trans", trans.length)
-
-  let allInstructions: TransactionInstruction[] = [];
-
-  for (let i = 0; i < trans.length; i++) {
-    try {
-      if (trans[i] === undefined) {
-
-      } else {
-        // console.log("trans[i]", trans[i])
-        // const transaction  = trans[i].transaction;
-        // console.log("transaction", transaction)
-        const signatures = trans[i].transaction.signatures;
-        console.log("signatures", signatures)
-        let sender = "";
-        let receiver = "";
-        // const meta = trans[i].meta;
-        const message = trans[i].transaction.message;
-        const instructions = message.instructions;
-        const accountKeys = message.accountKeys;
-        // console.log("accountKeys", accountKeys)
-        const mixerInstr = instructions.map((inst: any) => {
-          if (accountKeys[inst.programIdIndex] === 'BhdU135mdBb1V7jcKdAZoFueNMLMeAtAbBgUZehqRte7') {
-            return inst;
-          }
-        })[0];
-
-        console.log("mixerInstr.accounts", mixerInstr.accounts);
-        sender = accountKeys[mixerInstr.accounts[0]];
-        receiver = accountKeys[mixerInstr.accounts[mixerInstr.accounts.length - 2]];
-
-        if (sender === "undefined") {
-
-        } else {
-          if (receiver === "undefined") {
-
-          } else {
-            const mixerInstData = mixerInstr.data;
-            // console.log("mixerInstData (base58):", mixerInstData)
-
-            // Decode base58 to bytes, then convert to hex
-            const decodedBytes = bs58.decode(mixerInstData);
-            const hexData = Buffer.from(decodedBytes).toString('hex');
-
-            // console.log("mixerInstData (hex):", hexData)
+  // Option 1: Use poolId directly
+  // await swap('buy', 0.001, new PublicKey(poolId))
+  
+  // Option 2: Find pool by mints (baseMint and quoteMint)
+  const baseMint = "So11111111111111111111111111111111111111112" // SOL/WSOL
+  const quoteMint = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB" // USD1 token
+  
+  // Buy: WSOL -> USD1 -> Token
+  await swap('buy', 0.001, {
+    baseMint,
+    quoteMint
+  })
+  
+  // Sell: Token -> USD1 -> WSOL
+  // await swap('sell', 1.0, {
+  //   baseMint,
+  //   quoteMint
+  // })
+  
+  // Sell: Swap Token -> SOL (sell tokens for SOL)
+  // await confirmSwap('sell', 1.0, {
+  //   baseMint,
+  //   quoteMint
+  // }) // 1.0 token (adjust based on token decimals)
 
 
 
-            const parsed = parseMultiLayerTransfer(hexData);
-            if (parsed.roundId === "") continue;
-            const roundId = new anchor.BN(parsed.roundId);
 
 
-            const stagingAccountsWithBumps = deriveStagingPDAs(new PublicKey(sender), new PublicKey(receiver), roundId);
-            const transaction = new Transaction();
-            for (let i = 0; i < 4; i++) {
-              const stagingPDA = stagingAccountsWithBumps[i][0];
-              const layer = i + 1;
-
-              const instruction = await program.methods
-                // @ts-ignore
-                .closeMultiLayerStaging(layer, roundId)
-                .accounts({
-                  closer: payer.publicKey,       // Anyone can close and receive rent
-                  staging: stagingPDA,
-                  originalPayer: new PublicKey(sender),  // Just for PDA derivation
-                  recipient: new PublicKey(receiver),
-                }).instruction();
-
-              if (!instruction) {
-                console.warn(`No instruction returned for layer ${layer}, skipping`);
-                continue;
-              }
-
-              // transaction.add(instruction);
-              allInstructions.push(instruction);
-            }
-
-            // transaction.feePayer = payer.publicKey;
-            // const { blockhash } = await connection.getLatestBlockhash();
-            // transaction.recentBlockhash = blockhash;
-            // transaction.sign(payer);
-
-            // const simResult = await connection.simulateTransaction(transaction);
-            // if (simResult.value.err) {
-            //   console.error(`Simulation failed`, simResult.value.err);
-            // } else {
-            //   console.log(`Simulation success`, simResult.value.logs ?? []);
-
-            //   // Serialize the signed transaction to raw bytes
-            //   const rawTransaction = transaction.serialize();
-
-            //   const txSignature = await connection.sendRawTransaction(rawTransaction);
-
-            //   // Confirm the transaction
-            //   const confirmation = await connection.confirmTransaction(txSignature, 'confirmed');
-            //   console.log(`Closed staging accounts: https://solscan.io/tx/${txSignature}`);
-            // }
-
-
-          }
-        }
-      }
-    } catch (error) {
-      console.log("error", error)
-      continue;
-    }
-  }
-
-  const num_of_trans = Math.ceil(allInstructions.length / 14);
-  console.log("num_of_trans", num_of_trans)
-  console.log("total instructions", allInstructions.length)
-
-  for (let j = 0; j < num_of_trans; j++) {
-    const startIdx = j * 14;
-    const endIdx = Math.min(startIdx + 14, allInstructions.length);
-    const batchInstructions = allInstructions.slice(startIdx, endIdx);
-    
-    console.log(`Processing batch ${j + 1}/${num_of_trans} with ${batchInstructions.length} instructions`);
-
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
-
-    const messageV0 = new TransactionMessage({
-      payerKey: payer.publicKey,
-      recentBlockhash: blockhash,
-      instructions: batchInstructions,
-    }).compileToV0Message();
-
-    // 3. Create VersionedTransaction
-    const transaction = new VersionedTransaction(messageV0);
-
-    transaction.sign([payer])
-
-    try {
-      // 5. Send transaction
-      const signature = await connection.sendTransaction(transaction, {
-        maxRetries: 5,
-      });
-
-      console.log(`Transaction ${j + 1}/${num_of_trans} sent: https://solscan.io/tx/${signature}`);
-      
-      // Wait for confirmation
-      const confirmation = await connection.confirmTransaction(signature, 'confirmed');
-      if (confirmation.value.err) {
-        console.error(`Transaction ${j + 1} failed:`, confirmation.value.err);
-      } else {
-        console.log(`Transaction ${j + 1} confirmed successfully`);
-      }
-    } catch (error) {
-      console.error(`Error sending transaction ${j + 1}:`, error);
-    }
-  }
+  
 }
 
-getAllTransactionsFromFirst()
+main()
