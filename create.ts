@@ -7,6 +7,7 @@ import {
   createInitializeMint2Instruction,
   TOKEN_PROGRAM_ID,
   NATIVE_MINT,
+  initializeMint2InstructionData,
 } from "@solana/spl-token";
 
 import {
@@ -21,82 +22,169 @@ import {
   sendAndConfirmTransaction
 } from "@solana/web3.js";
 import { initSdk, MAIN_KP } from "./config";
-import { ApiV3Token, LAUNCHPAD_PROGRAM, LaunchpadConfig, LaunchpadPoolInitParam, TxVersion } from "@raydium-io/raydium-sdk-v2";
+import { ApiV3Token, getPdaLaunchpadConfigId, initialize, initializeV2, LAUNCHPAD_PROGRAM, LaunchpadConfig, LaunchpadPoolInitParam, TxVersion, CpmmCreatorFeeOn, getPdaLaunchpadPoolId, getPdaLaunchpadVaultId } from "@raydium-io/raydium-sdk-v2";
 import axios from "axios";
 import base58 from "bs58";
 import { BN } from "bn.js";
 import { readFile } from "fs/promises";
 import { openAsBlob } from "fs";
+import { buildSwapInstructions } from "./swap";
 
-interface ConfigInfo {
-  name: string
-  pubKey: string
-  epoch: number
-  curveType: number
-  index: number
-  migrateFee: string
-  tradeFeeRate: string
-  maxShareFeeRate: string
-  minSupplyA: string
-  maxLockRate: string
-  minSellRateA: string
-  minMigrateRateA: string
-  minFundRaisingB: string
-  protocolFeeOwner: string
-  migrateFeeOwner: string
-  migrateToAmmWallet: string
-  migrateToCpmmWallet: string
-  mintB: string
-}
 
-export const IMAGE_URL = "./public/im.png"
+export const IMAGE_URL = "./public/slx.png"
 export const TOKEN_INFO: any = {
   name: "AAA",
   symbol: "AAA",
 }
 
-export const createTokenTx = async (connection: Connection, mainKp: Keypair, mintKp: Keypair) => {
+const usd1Mint = new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB")
+
+// create token by instructions
+export const createTokenTxV2 = async (connection: Connection, mainKp: Keypair, mintKp: Keypair) => {
   try {
     // Initialize SDK
     const raydium = await initSdk();
-    const mintHost = 'https://launch-mint-v1.raydium.io'
 
-    const configRes: {
-      data: {
-        data: {
-          data: {
-            key: ConfigInfo
-            mintInfoB: ApiV3Token
-          }[]
-        }
-      }
-    } = await axios.get(`${mintHost}/main/configs`)
+    const configId = getPdaLaunchpadConfigId(new PublicKey(LAUNCHPAD_PROGRAM), usd1Mint, 0, 0).publicKey
 
-    const configs = configRes.data.data.data[0].key
-    const configInfo: ReturnType<typeof LaunchpadConfig.decode> = {
-      index: configs.index,
-      mintB: new PublicKey(configs.mintB),
-      tradeFeeRate: new BN(configs.tradeFeeRate),
-      epoch: new BN(configs.epoch),
-      curveType: configs.curveType,
-      migrateFee: new BN(configs.migrateFee),
-      maxShareFeeRate: new BN(configs.maxShareFeeRate),
-      minSupplyA: new BN(configs.minSupplyA),
-      maxLockRate: new BN(configs.maxLockRate),
-      minSellRateA: new BN(configs.minSellRateA),
-      minMigrateRateA: new BN(configs.minMigrateRateA),
-      minFundRaisingB: new BN(configs.minFundRaisingB),
-      protocolFeeOwner: new PublicKey(configs.protocolFeeOwner),
-      migrateFeeOwner: new PublicKey(configs.migrateFeeOwner),
-      migrateToAmmWallet: new PublicKey(configs.migrateToAmmWallet),
-      migrateToCpmmWallet: new PublicKey(configs.migrateToCpmmWallet),
+
+    const platformId = new PublicKey('FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1')
+
+    const authProgramId = new PublicKey('WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh')
+    
+    const poolId = getPdaLaunchpadPoolId(LAUNCHPAD_PROGRAM, mintKp.publicKey, usd1Mint).publicKey
+
+    console.log("poolId", poolId)
+
+    // Derive vault PDAs based on poolId and mints
+    // vaultA holds base tokens (mintKp.publicKey), vaultB holds quote tokens (usd1Mint)
+    const vaultA = getPdaLaunchpadVaultId(LAUNCHPAD_PROGRAM, poolId, mintKp.publicKey).publicKey
+    const vaultB = getPdaLaunchpadVaultId(LAUNCHPAD_PROGRAM, poolId, usd1Mint).publicKey
+    
+    console.log("vaultA (base token vault):", vaultA.toBase58())
+    console.log("vaultB (quote token vault):", vaultB.toBase58())
+
+    // Derive metadata PDA for the mint
+    // Metaplex metadata PDA: seeds = ["metadata", metadata_program_id, mint_address]
+    const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+    const [metadataId] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("metadata"),
+        METADATA_PROGRAM_ID.toBuffer(),
+        mintKp.publicKey.toBuffer(),
+      ],
+      METADATA_PROGRAM_ID
+    )
+    console.log("metadataId (derived PDA):", metadataId.toBase58())
+
+
+    const decimals = 6;
+
+    const file = await openAsBlob(IMAGE_URL)
+
+    let imageMetadata = await createImageMetadata(file);
+
+    console.log("imageMetadata", imageMetadata)
+
+    const tokenInfo = {
+      name: TOKEN_INFO.name,
+      symbol: TOKEN_INFO.symbol,
+      description: "DESCRIPTION",
+      createdOn: "https://bonk.fun",
+      platformId: "FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1",
+      image: imageMetadata
     }
-    const configId = new PublicKey(configRes.data.data.data[0].key.pubKey)
-    const mintBInfo = configRes.data.data.data[0].mintInfoB
+
+    let uri = await createBonkTokenMetadata(tokenInfo);
+
+    console.log("uri", uri);
+
+    if (!uri) {
+      throw new Error("Token metadata URI is undefined");
+    }
+
+
+    // Prepare curve parameters for AMM migration
+    const curveParam = {
+      type: "ConstantCurve" as const,
+      migrateType: "amm" as const, // Migrate to AMM (not CPMM)
+      supply: LaunchpadPoolInitParam.supply,
+      totalFundRaisingB: LaunchpadPoolInitParam.totalFundRaisingB,
+      totalSellA: LaunchpadPoolInitParam.totalSellA,
+    }
+
+    const tokenCreateInstruction = initializeV2(
+      new PublicKey(LAUNCHPAD_PROGRAM),
+      mainKp.publicKey,
+      mintKp.publicKey,
+      configId,
+      platformId,
+      authProgramId,
+      poolId,
+      mintKp.publicKey,
+      usd1Mint,
+      vaultA,
+      vaultB,
+      metadataId,
+      decimals,
+      TOKEN_INFO.name,
+      TOKEN_INFO.symbol,
+      uri,
+      curveParam,
+      LaunchpadPoolInitParam.totalLockedAmount,
+      LaunchpadPoolInitParam.cliffPeriod,
+      LaunchpadPoolInitParam.unlockPeriod,
+      CpmmCreatorFeeOn.OnlyTokenB
+    )
+
+    const instructions = [tokenCreateInstruction]
+
+    const swapInstructions = await buildSwapInstructions({
+      direction: 'buy',
+      amountIn: 0.001,
+      tokenMint: mintKp.publicKey
+    })
+
+    instructions.push(...swapInstructions.instructions)
+
+    // Build transaction message
+    const latestBlockhash = await connection.getLatestBlockhash()
+    const messageV0 = new TransactionMessage({
+      payerKey: mainKp.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions,
+    }).compileToV0Message()
+
+    const transaction = new VersionedTransaction(messageV0)
+    transaction.sign([mainKp, mintKp])
+    console.log("simulation: ", await connection.simulateTransaction(transaction))
+
+    // const signature = await connection.sendTransaction(transaction)
+    // console.log("signature", signature)
+
+    // return signature
+
+  } catch (error) {
+    console.error("createTokenTx error:", error);
+    throw error;
+  }
+}
+
+export const createTokenTxV1 = async (connection: Connection, mainKp: Keypair, mintKp: Keypair) => {
+  try {
+    // Initialize SDK
+    const raydium = await initSdk();
+
+    const configId = getPdaLaunchpadConfigId(new PublicKey(LAUNCHPAD_PROGRAM), usd1Mint, 0, 0).publicKey
+
+    const configData = await raydium.connection.getAccountInfo(configId)
+    if (!configData) throw new Error('config not found')
+    const configInfo  = LaunchpadConfig.decode(configData?.data)
+    const mintBInfo = await raydium.token.getTokenInfo(configInfo.mintB)
+
 
     console.log("configInfo", configInfo)
     console.log("configId", configId)
-    console.log("mintBInfo", mintBInfo)
 
     const owner = raydium.ownerPubKey;
 
@@ -121,13 +209,11 @@ export const createTokenTx = async (connection: Connection, mainKp: Keypair, min
       description: 'description',
     }
 
-
-    // const configInfo = LaunchpadConfig.decode(configData.data);
-    // const mintBInfo = await raydium.token.getTokenInfo(configInfo.mintB);
-
     // Set up transaction parameters
-    const solBuyAmount = 0.01;
-    const buyAmount = new BN(solBuyAmount * 10 ** 9);
+    // buyAmount is in quote token (USD1) units, so use mintB decimals (6 for USD1)
+    const buyAmount = 0.455; // 0.001 USD1
+    const buyAmountBN = new BN(buyAmount * Math.pow(10, mintBInfo.decimals))
+    console.log(`Buy amount: ${buyAmount} ${mintBInfo.symbol} = ${buyAmountBN.toString()} raw units (decimals: ${mintBInfo.decimals})`)
     const slippageAmount = 0.1;
     const slippage = new BN(slippageAmount * 100);
     const buffer = await readFile(IMAGE_URL);
@@ -159,7 +245,6 @@ export const createTokenTx = async (connection: Connection, mainKp: Keypair, min
 
     // Create launchpad transaction
 
-
     const { execute, transactions, extInfo } = await raydium.launchpad.createLaunchpad({
       programId: LAUNCHPAD_PROGRAM,
       mintA: mintKp.publicKey,
@@ -170,13 +255,13 @@ export const createTokenTx = async (connection: Connection, mainKp: Keypair, min
       configId,
       configInfo, // optional, sdk will get data by configId if not provided
       migrateType: newMintData.migrateType as 'amm' | 'cpmm',
-      mintBDecimals: mintBInfo.decimals, // default 9
+      mintBDecimals: mintBInfo.decimals, // Use decimals from config response
   
       platformId: newMintData.platformId,
       txVersion: TxVersion.V0,
-      slippage: new BN(100), // means 1%
-      buyAmount: new BN(10000),
-      createOnly: true, // true means create mint only, false will "create and buy together"
+      slippage: slippage, // means 1%
+      buyAmount: buyAmountBN,
+      createOnly: buyAmount<=0, // true means create mint only, false will "create and buy together"
   
       supply: newMintData.supply, // lauchpad mint supply amount, default: LaunchpadPoolInitParam.supply
       totalSellA: newMintData.totalSellA, // lauchpad mint sell amount, default: LaunchpadPoolInitParam.totalSellA
@@ -219,11 +304,11 @@ export const createTokenTx = async (connection: Connection, mainKp: Keypair, min
     
     transaction.sign([mainKp, mintKp]);
     
-    // // Add simulation options to get more detailed error information
-    // console.log("simulation", await connection.simulateTransaction(transaction, {
-    //   sigVerify: false,
-    //   replaceRecentBlockhash: true
-    // }))
+    // Add simulation options to get more detailed error information
+    console.log("simulation", await connection.simulateTransaction(transaction, {
+      sigVerify: false,
+      replaceRecentBlockhash: true
+    }))
 
 
     // transaction.sign([mainKp, mintKp]);

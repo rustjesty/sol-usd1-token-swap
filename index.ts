@@ -9,11 +9,12 @@ import {
 } from '@raydium-io/raydium-sdk-v2'
 
 import BN from 'bn.js'
-import { connection, initSdk } from './config'
+import { connection, initSdk, MAIN_KP } from './config'
 
 import { CLMM_PROGRAM_ID, DEVNET_PROGRAM_ID } from '@raydium-io/raydium-sdk-v2'
 import { swap } from './swap'
-import { PublicKey } from '@solana/web3.js'
+import { Keypair, PublicKey } from '@solana/web3.js'
+import { createTokenTxV2 } from './create'
 
 const VALID_PROGRAM_ID = new Set([CLMM_PROGRAM_ID.toBase58(), DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID.toBase58()])
 export const txVersion = TxVersion.V0 // or TxVersion.LEGACY
@@ -30,30 +31,12 @@ const main = async () => {
   // Option 2: Find pool by mints (baseMint and quoteMint)
   const baseMint = "So11111111111111111111111111111111111111112" // SOL/WSOL
   const quoteMint = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB" // USD1 token
-  
-  // Buy: WSOL -> USD1 -> Token
-  await swap('sell', 32000, {
-    baseMint,
-    quoteMint
-  })
-  
-  // Sell: Token -> USD1 -> WSOL
-  // await swap('sell', 1.0, {
-  //   baseMint,
-  //   quoteMint
-  // })
-  
-  // Sell: Swap Token -> SOL (sell tokens for SOL)
-  // await confirmSwap('sell', 1.0, {
-  //   baseMint,
-  //   quoteMint
-  // }) // 1.0 token (adjust based on token decimals)
+  const tokenMint = new PublicKey("CPgobeEZLk82DdXqWxBiwvvE2tkQwDd12AuR1V8TqwXu")
+  // // Buy: WSOL -> USD1 -> Token
+  await swap('buy', 0.001, tokenMint)
+  const mintKp = Keypair.generate()
 
-
-
-
-
-  
+  // createTokenTxV2(connection, MAIN_KP, mintKp)
 }
 
 main()
