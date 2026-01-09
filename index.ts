@@ -22,21 +22,15 @@ export const isValidClmm = (id: string) => VALID_PROGRAM_ID.has(id)
 
 const main = async () => {
   const raydium = await initSdk()
-  const poolId = 'AQAGYQsdU853WAKhXM79CgNdoyhrRwXvYHX6qrDyC1FS'
-  const inputMint = "So11111111111111111111111111111111111111112"
 
-  // Option 1: Use poolId directly
-  // await swap('buy', 0.001, new PublicKey(poolId))
-  
-  // Option 2: Find pool by mints (baseMint and quoteMint)
-  const baseMint = "So11111111111111111111111111111111111111112" // SOL/WSOL
-  const quoteMint = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB" // USD1 token
   const tokenMint = new PublicKey("CPgobeEZLk82DdXqWxBiwvvE2tkQwDd12AuR1V8TqwXu")
   // // Buy: WSOL -> USD1 -> Token
-  await swap('buy', 0.001, tokenMint)
+
+  const isDevBuy = false;
+  // await swap('sell', 20000, tokenMint, isDevBuy)
   const mintKp = Keypair.generate()
 
-  // createTokenTxV2(connection, MAIN_KP, mintKp)
+  createTokenTxV2(connection, MAIN_KP, mintKp)
 }
 
 main()

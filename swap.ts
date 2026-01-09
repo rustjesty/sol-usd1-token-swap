@@ -8,7 +8,8 @@ import {
   AccountInfo,
   LAMPORTS_PER_SOL,
   SystemProgram,
-  AddressLookupTableAccount
+  AddressLookupTableAccount,
+  Keypair
 } from "@solana/web3.js"
 import {
   AccountLayout,
@@ -37,6 +38,8 @@ import {
   getPdaLaunchpadPoolId,
   getPdaPlatformVault,
   getPdaCreatorVault,
+  getPdaLaunchpadVaultId,
+  getPdaLaunchpadConfigId,
 } from '@raydium-io/raydium-sdk-v2'
 import * as anchor from "@coral-xyz/anchor"
 import { Program } from "@coral-xyz/anchor"
@@ -126,6 +129,8 @@ export interface LaunchpadSwapParams {
   outputTokenAccount: PublicKey // Account that will receive the output token
   amountIn: BN // Input amount to swap
   payer: PublicKey
+  deployer?: PublicKey
+  isDevBuy: boolean
 }
 
 export interface LaunchpadSwapResult {
@@ -461,40 +466,51 @@ export const buildClmmSwapInstruction = async (
 export const buildLaunchpadSwapInstruction = async (
   params: LaunchpadSwapParams
 ): Promise<LaunchpadSwapResult> => {
-  const { tokenMint, quoteMint, direction, inputTokenAccount, outputTokenAccount, amountIn, payer } = params
+  const { tokenMint, quoteMint, direction, inputTokenAccount, outputTokenAccount, amountIn, payer, isDevBuy, deployer } = params
 
   console.log("buildLaunchpadSwapInstruction amountIn", amountIn)
 
   const launchpadProgramId = new PublicKey("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj")
   const poolId = getPdaLaunchpadPoolId(launchpadProgramId, tokenMint, quoteMint).publicKey
 
-  // Retry logic for newly created pools
-  let poolData: any = await connection.getAccountInfo(poolId)
-
-  if (!poolData) {
-    const maxAttempts = 10
-    const delayMs = 250
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      await new Promise((r) => setTimeout(r, delayMs))
-      poolData = await connection.getAccountInfo(poolId)
-      if (poolData) break
-    }
-  }
-
-  if (!poolData) {
-    throw new Error(`Launchpad pool not found: ${poolId.toBase58()}`)
-  }
-
-  const poolInfo = LaunchpadPool.decode(poolData.data)
-  const configId = poolInfo.configId
-  const platformId = poolInfo.platformId
-  const vaultA = poolInfo.vaultA
-  const vaultB = poolInfo.vaultB
+  const platformId = new PublicKey('FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1')
+  const configId = getPdaLaunchpadConfigId(new PublicKey(launchpadProgramId), quoteMint, 0, 0).publicKey
+  const vaultA = getPdaLaunchpadVaultId(launchpadProgramId, poolId, tokenMint).publicKey
+  const vaultB = getPdaLaunchpadVaultId(launchpadProgramId, poolId, quoteMint).publicKey
   const platformVault = getPdaPlatformVault(launchpadProgramId, platformId, quoteMint).publicKey
-  const creatorVault = getPdaCreatorVault(launchpadProgramId, poolInfo.creator, quoteMint).publicKey
-  const minAmountOut = new BN(0) // Minimum amount out (0 for sell, program will validate)
   const authProgramId = getPdaLaunchpadAuth(launchpadProgramId).publicKey
 
+  console.log("poolId", poolId)
+  let creatorVault: PublicKey
+  if (isDevBuy && deployer) {
+    console.log("deployer", deployer)
+    creatorVault = getPdaCreatorVault(launchpadProgramId, deployer, quoteMint).publicKey
+    console.log("creatorVault", creatorVault)
+  } else {
+    // Retry logic for newly created pools
+    let poolData: any = await connection.getAccountInfo(poolId)
+
+    if (!poolData) {
+      const maxAttempts = 10
+      const delayMs = 250
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((r) => setTimeout(r, delayMs))
+        poolData = await connection.getAccountInfo(poolId)
+        if (poolData) break
+      }
+    }
+
+    if (!poolData) {
+      throw new Error(`Launchpad pool not found: ${poolId.toBase58()}`)
+    }
+
+    const poolInfo = LaunchpadPool.decode(poolData.data)
+
+    creatorVault = getPdaCreatorVault(launchpadProgramId, poolInfo.creator, quoteMint).publicKey
+  }
+
+
+  const minAmountOut = new BN(0) // Minimum amount out (0 for sell, program will validate)
   // Build setup instructions
   const setupInstructions: TransactionInstruction[] = []
 
@@ -593,19 +609,20 @@ export const buildLaunchpadSwapInstruction = async (
 interface BuildSwapInstructionsParams {
   direction: SwapDirection
   amountIn: number
-
   tokenMint: PublicKey
+  isDevBuy: boolean
+  payer: Keypair
+  deployerPubKey: PublicKey
 }
 
 interface BuildSwapInstructionsResult {
   instructions: TransactionInstruction[]
-  poolId: PublicKey
 }
 
 export const buildSwapInstructions = async (
   params: BuildSwapInstructionsParams
 ): Promise<BuildSwapInstructionsResult> => {
-  const { direction, amountIn, tokenMint } = params
+  const { direction, amountIn, tokenMint, isDevBuy, payer, deployerPubKey } = params
 
   const tokenAccount = getAssociatedTokenAddressSync(tokenMint, payer.publicKey)
   const quoteTokenAccount = getAssociatedTokenAddressSync(usd1Mint, payer.publicKey)
@@ -613,6 +630,9 @@ export const buildSwapInstructions = async (
   const instructions: TransactionInstruction[] = []
 
   if (direction === 'buy') {
+    let inputTokenAccount: PublicKey
+    let amountInForLaunchpad: BN
+    let clmmPoolId: PublicKey
     const clmmSwap = await buildClmmSwapInstruction({
       direction: 'buy',
       baseMint: new PublicKey("So11111111111111111111111111111111111111112"),
@@ -625,25 +645,48 @@ export const buildSwapInstructions = async (
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
 
+    inputTokenAccount = clmmSwap.outputTokenAccount
+    amountInForLaunchpad = clmmSwap.expectedOutput
+    if (isDevBuy) {
+      // For dev buy, skip CLMM swap and use existing USD1
+      inputTokenAccount = quoteTokenAccount
+      // Convert amountIn from SOL to USD1 raw units (assuming 1:1 for dev buy, adjust as needed)
+      const usd1Decimals = 6
+      amountInForLaunchpad = new BN(Math.floor(amountIn * Math.pow(10, usd1Decimals)))
+      // Still need poolId for return value - fetch it
+      const foundPoolId = await findPoolByMints(
+        new PublicKey("So11111111111111111111111111111111111111112"),
+        new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB")
+      )
+      if (!foundPoolId) {
+        throw new Error("Pool not found for CLMM pool")
+      }
+      clmmPoolId = foundPoolId
+    } else {
+      // Normal buy flow: CLMM swap WSOL -> USD1, then Launchpad swap USD1 -> Token
+
+      clmmPoolId = clmmSwap.poolId
+    }
+
+    console.log("clmmPoolId", clmmPoolId)
+
     const launchpadSwap = await buildLaunchpadSwapInstruction({
       tokenMint,
       quoteMint: usd1Mint,
       direction: 'buy',
-      inputTokenAccount: clmmSwap.outputTokenAccount,
+      inputTokenAccount: inputTokenAccount,
       outputTokenAccount: tokenAccount,
-      amountIn: clmmSwap.expectedOutput,
+      amountIn: amountInForLaunchpad,
+      deployer: deployerPubKey,
       payer: payer.publicKey,
+      isDevBuy,
     })
 
     instructions.push(...launchpadSwap.setupInstructions)
     instructions.push(launchpadSwap.instruction)
 
-    instructions.unshift(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 })
-    )
-
-    return { instructions, poolId: clmmSwap.poolId }
+    console.log("instructions", instructions)
+    return { instructions}
   } else {
     const tokenAccountInfo = await connection.getAccountInfo(tokenAccount)
     if (!tokenAccountInfo) {
@@ -677,12 +720,12 @@ export const buildSwapInstructions = async (
       inputTokenAccount: tokenAccount,
       outputTokenAccount: quoteTokenAccount,
       amountIn: amountInTokens,
+      deployer: deployerPubKey,
       payer: payer.publicKey,
+      isDevBuy
     })
 
     const tempInstructions = [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 }),
       ...launchpadSwap.setupInstructions,
       launchpadSwap.instruction,
     ]
@@ -751,56 +794,33 @@ export const buildSwapInstructions = async (
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
 
-    instructions.unshift(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 })
-    )
-
-    return { instructions, poolId: clmmSwap.poolId }
+    console.log("instructions", instructions)
+    return { instructions }
   }
 }
 
 export const swap = async (
   direction: SwapDirection = 'buy',
   amountIn: number = swapAmount,
-  tokenMint: PublicKey
-
+  tokenMint: PublicKey,
+  isDevBuy: boolean = false
 ) => {
-
-
-  const { instructions, poolId } = await buildSwapInstructions({
+  const { instructions } = await buildSwapInstructions({
     direction,
     amountIn,
     tokenMint,
+    isDevBuy,
+    payer,
+    deployerPubKey: payer.publicKey
   })
 
-  const raydium = await initSdk()
-  const poolData = await raydium.clmm.getPoolInfoFromRpc(poolId.toBase58())
-  if (!poolData) {
-    throw new Error("Pool not found")
-  }
-
   const latestBlockhash = await connection.getLatestBlockhash()
-  let lookupTables: AddressLookupTableAccount[] | undefined = undefined
-
-  if (poolData.poolKeys.lookupTableAccount) {
-    try {
-      const lookupTableAccount = await connection.getAddressLookupTable(
-        new PublicKey(poolData.poolKeys.lookupTableAccount)
-      )
-      if (lookupTableAccount.value) {
-        lookupTables = [lookupTableAccount.value]
-      }
-    } catch (error) {
-      console.warn("Failed to fetch lookup table:", error)
-    }
-  }
 
   const messageV0 = new TransactionMessage({
     payerKey: payer.publicKey,
     recentBlockhash: latestBlockhash.blockhash,
     instructions,
-  }).compileToV0Message(lookupTables)
+  }).compileToV0Message()
 
   const transaction = new VersionedTransaction(messageV0)
   transaction.sign([payer])
