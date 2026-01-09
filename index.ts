@@ -32,7 +32,7 @@ const main = async () => {
   const quoteMint = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB" // USD1 token
   
   // Buy: WSOL -> USD1 -> Token
-  await swap('buy', 0.001, {
+  await swap('sell', 32000, {
     baseMint,
     quoteMint
   })

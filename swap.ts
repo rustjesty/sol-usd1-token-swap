@@ -185,6 +185,7 @@ export const buildClmmSwapInstruction = async (
   } else {
     const inputTokenInfo = isMintASOL ? poolInfo.mintB : poolInfo.mintA
     const inputDecimals = inputTokenInfo.decimals
+    console.log("inputDecimals", inputDecimals)
     amountIn = new BN(amount * Math.pow(10, inputDecimals))
   }
 
@@ -385,13 +386,14 @@ export const buildClmmSwapInstruction = async (
   amountIn.toArrayLike(Buffer, "le", 8).copy(amountBuffer)
 
   const otherAmountThresholdBuffer = Buffer.alloc(8)
+  console.log("amountOutMin", amountOutMin)
   amountOutMin.toArrayLike(Buffer, "le", 8).copy(otherAmountThresholdBuffer)
 
   const sqrtPriceLimitBuffer = Buffer.alloc(16)
   sqrtPriceLimitX64.toArrayLike(Buffer, "le", 16).copy(sqrtPriceLimitBuffer)
   console.log("sqrtPriceLimitBuffer", sqrtPriceLimitBuffer)
 
-  const isBaseInputBuffer = Buffer.from([isBaseInput ? 1 : 0])
+  const isBaseInputBuffer = Buffer.from([1])
   console.log("isBaseInputBuffer", isBaseInputBuffer)
 
   const instructionData = Buffer.concat([
@@ -683,27 +685,125 @@ export const swap = async (
       payer: payer.publicKey,
     })
 
-    instructions.push(...launchpadSwap.setupInstructions)
-    instructions.push(launchpadSwap.instruction)
+    // Step 2: Simulate Launchpad swap to get actual USD1 output
+    // Build a temporary transaction with just the Launchpad swap to simulate it
+    const tempInstructions = [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 }),
+      ...launchpadSwap.setupInstructions,
+      launchpadSwap.instruction,
+    ]
 
-    // Step 2: CLMM swap USD1 -> WSOL
-    // Since we can't calculate exact USD1 output from Launchpad swap without bonding curve,
-    // we use a very conservative fixed amount (0.1 USD1) to ensure we don't exceed what we receive
-    // In production, you should calculate the actual expected output from the Launchpad pool
+    const tempLatestBlockhash = await connection.getLatestBlockhash()
+    const tempMessageV0 = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: tempLatestBlockhash.blockhash,
+      instructions: tempInstructions,
+    }).compileToV0Message()
+
+    const tempTransaction = new VersionedTransaction(tempMessageV0)
+    tempTransaction.sign([payer])
+
+    // Simulate the Launchpad swap to get actual USD1 output
+    const simulation = await connection.simulateTransaction(tempTransaction, {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+    })
+
+    if (simulation.value.err) {
+      throw new Error(`Launchpad swap simulation failed: ${JSON.stringify(simulation.value.err)}`)
+    }
+
+    // Extract USD1 output from simulation
     const usd1Decimals = 6 // USD1 has 6 decimals
-    const conservativeUsd1Amount = 0.1 // Use 0.1 USD1 as a very conservative estimate
+    let actualUsd1Amount = 0
+
+    if (simulation.value.logs) {
+      console.log("Launchpad swap simulation logs:", simulation.value.logs)
+    }
+
+    // Get postTokenBalances from simulation to find USD1 output
+    const simulationValue = simulation.value as any
     
-    console.log(`Using conservative USD1 amount (${conservativeUsd1Amount} USD1) for CLMM swap`)
-    console.log(`Note: This is a conservative estimate. In production, calculate actual USD1 output from Launchpad swap.`)
+    // Log all token balances for debugging
+    console.log("Pre token balances:", JSON.stringify(simulationValue.preTokenBalances, null, 2))
+    console.log("Post token balances:", JSON.stringify(simulationValue.postTokenBalances, null, 2))
     
+    // Get pre and post balances for USD1 account
+    const preUsd1Balance = simulationValue.preTokenBalances?.find(
+      (balance: any) => balance.owner === payer.publicKey.toBase58() && 
+                       balance.mint === usd1Mint.toBase58()
+    )
+    const postUsd1Balance = simulationValue.postTokenBalances?.find(
+      (balance: any) => balance.owner === payer.publicKey.toBase58() && 
+                       balance.mint === usd1Mint.toBase58()
+    )
+
+    if (postUsd1Balance) {
+      // Try to use uiAmount if available (human-readable), otherwise calculate from raw amount
+      const postAmountRaw = new BN(postUsd1Balance.uiTokenAmount.amount)
+      const preAmountRaw = preUsd1Balance ? new BN(preUsd1Balance.uiTokenAmount.amount) : new BN(0)
+      const usd1OutputRaw = postAmountRaw.sub(preAmountRaw)
+      
+      // Check if uiAmount is available (more reliable)
+      let postAmountUi = postUsd1Balance.uiTokenAmount.uiAmount
+      let preAmountUi = preUsd1Balance?.uiTokenAmount?.uiAmount ?? 0
+      
+      if (postAmountUi !== null && postAmountUi !== undefined) {
+        // Use uiAmount if available (already in human-readable format)
+        actualUsd1Amount = postAmountUi - preAmountUi
+        console.log(`Using uiAmount from simulation - Pre: ${preAmountUi} USD1, Post: ${postAmountUi} USD1, Output: ${actualUsd1Amount} USD1`)
+      } else {
+        // Fallback to calculating from raw amount
+        actualUsd1Amount = usd1OutputRaw.toNumber() / Math.pow(10, usd1Decimals)
+        console.log(`Calculated from raw amount - Pre: ${preAmountRaw.toString()}, Post: ${postAmountRaw.toString()}, Output: ${usd1OutputRaw.toString()} raw units (${actualUsd1Amount} USD1)`)
+      }
+      
+      console.log(`Pre USD1 balance: ${preAmountRaw.toString()} raw units (${preAmountRaw.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
+      console.log(`Post USD1 balance: ${postAmountRaw.toString()} raw units (${postAmountRaw.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
+      console.log(`USD1 output from Launchpad swap: ${usd1OutputRaw.toString()} raw units (${actualUsd1Amount} USD1)`)
+      console.log(`Will use ${actualUsd1Amount} USD1 for CLMM swap`)
+    } else if (preUsd1Balance) {
+      // Account existed before but not after - this shouldn't happen, but handle it
+      console.warn(`USD1 account existed before but not found in postTokenBalances`)
+    } else {
+      // Account didn't exist before - check if it was created
+      console.warn(`USD1 account not found in simulation balances. It may have been created but balance is 0.`)
+    }
+
+    // If we couldn't get the amount from simulation, try to get it from the account directly
+    // after a dry-run, or use a calculation based on the bonding curve
+    if (actualUsd1Amount === 0) {
+      console.warn("Could not determine USD1 output from simulation. Checking account balance...")
+      // As a fallback, we could check the quoteTokenAccount balance, but it might not exist yet
+      // For now, we'll use a very small amount to avoid the insufficient funds error
+      // The user should ensure they have enough USD1 from the Launchpad swap
+      actualUsd1Amount = 0.01 // Very conservative fallback
+      console.warn(`Using fallback USD1 amount: ${actualUsd1Amount} USD1`)
+    }
+
+    // Ensure we have a minimum amount
+    if (actualUsd1Amount <= 0) {
+      throw new Error(`Invalid USD1 output from Launchpad swap: ${actualUsd1Amount}. The swap may have failed or produced 0 output.`)
+    }
+
+    console.log(`Using actual USD1 amount from Launchpad swap: ${actualUsd1Amount} USD1 for CLMM swap`)
+    console.log(`This amount will be converted to raw units: ${actualUsd1Amount * Math.pow(10, usd1Decimals)} raw units`)
+    
+    // Step 3: CLMM swap USD1 -> WSOL using actual amount from Launchpad swap
+    console.log(`Building CLMM swap instruction with amount: ${actualUsd1Amount} USD1`)
     const clmmSwap = await buildClmmSwapInstruction({
       poolId,
       direction: 'sell',
-      amount: conservativeUsd1Amount, // Use conservative fixed amount
+      amount: actualUsd1Amount, // Use actual amount from Launchpad swap
       payer: payer.publicKey,
       slippage: 0.01,
     })
+    console.log(`CLMM swap built. AmountIn (raw): ${clmmSwap.expectedOutput ? 'calculated' : 'not calculated'}`)
 
+    // Build the full transaction with both swaps
+    instructions.push(...launchpadSwap.setupInstructions)
+    instructions.push(launchpadSwap.instruction)
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
   }
@@ -743,6 +843,8 @@ export const swap = async (
     recentBlockhash: latestBlockhash.blockhash,
     instructions,
   }).compileToV0Message(lookupTables)
+
+  console.log("instructions", instructions)
 
   const transaction = new VersionedTransaction(messageV0)
   transaction.sign([payer])
