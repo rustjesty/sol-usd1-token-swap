@@ -23,8 +23,8 @@ import {
 } from "@solana/spl-token"
 import { connection, MAIN_KP, initSdk } from "./config"
 import BN from "bn.js"
-import { 
-  PoolUtils, 
+import {
+  PoolUtils,
   ApiV3PoolInfoConcentratedItem,
   ComputeClmmPoolInfo,
   ReturnTypeFetchMultiplePoolTickArrays,
@@ -96,8 +96,9 @@ const getClmmProgram = (): Program => {
 
 // Types for CLMM swap instruction
 export interface ClmmSwapParams {
-  poolId: PublicKey
   direction: SwapDirection
+  baseMint: PublicKey
+  quoteMint: PublicKey
   amount: number
   payer: PublicKey
   slippage?: number
@@ -113,6 +114,7 @@ export interface ClmmSwapResult {
   expectedOutput: BN
   amountOutMin: BN
   tickArrays: PublicKey[]
+  poolId: PublicKey
 }
 
 // Types for Launchpad swap instruction
@@ -137,9 +139,18 @@ export interface LaunchpadSwapResult {
 export const buildClmmSwapInstruction = async (
   params: ClmmSwapParams
 ): Promise<ClmmSwapResult> => {
-  const raydium = await initSdk()
-  const { poolId, direction, amount, payer, slippage = 0.01 } = params
+  const { baseMint, quoteMint, direction, amount, payer, slippage = 0.01 } = params
 
+  let poolId: PublicKey
+
+  const foundPoolId = await findPoolByMints(baseMint, quoteMint)
+  if (!foundPoolId) {
+    throw new Error(`Pool not found for mints: ${baseMint} / ${quoteMint}`)
+  }
+  poolId = foundPoolId
+
+
+  const raydium = await initSdk()
   // Fetch pool info using SDK
   const poolData = await raydium.clmm.getPoolInfoFromRpc(poolId.toBase58())
 
@@ -440,6 +451,7 @@ export const buildClmmSwapInstruction = async (
     expectedOutput: expectedSwapOutput,
     amountOutMin,
     tickArrays: uniqueTickArrays,
+    poolId,
   }
 }
 
@@ -458,6 +470,7 @@ export const buildLaunchpadSwapInstruction = async (
 
   // Retry logic for newly created pools
   let poolData: any = await connection.getAccountInfo(poolId)
+
   if (!poolData) {
     const maxAttempts = 10
     const delayMs = 250
@@ -577,36 +590,33 @@ export const buildLaunchpadSwapInstruction = async (
   }
 }
 
-export const swap = async (
-  direction: SwapDirection = 'buy',
-  amountIn: number = swapAmount,
-  pool: PublicKey | { baseMint: string | PublicKey; quoteMint: string | PublicKey }
-) => {
-  // Resolve pool ID
-  let poolId: PublicKey
-  if (pool instanceof PublicKey) {
-    poolId = pool
-  } else {
-    const foundPoolId = await findPoolByMints(pool.baseMint, pool.quoteMint)
-    if (!foundPoolId) {
-      throw new Error(`Pool not found for mints: ${pool.baseMint} / ${pool.quoteMint}`)
-    }
-    poolId = foundPoolId
-  }
+interface BuildSwapInstructionsParams {
+  direction: SwapDirection
+  amountIn: number
 
-  const tokenMint = new PublicKey("CPgobeEZLk82DdXqWxBiwvvE2tkQwDd12AuR1V8TqwXu")
+  tokenMint: PublicKey
+}
+
+interface BuildSwapInstructionsResult {
+  instructions: TransactionInstruction[]
+  poolId: PublicKey
+}
+
+export const buildSwapInstructions = async (
+  params: BuildSwapInstructionsParams
+): Promise<BuildSwapInstructionsResult> => {
+  const { direction, amountIn, tokenMint } = params
+
   const tokenAccount = getAssociatedTokenAddressSync(tokenMint, payer.publicKey)
   const quoteTokenAccount = getAssociatedTokenAddressSync(usd1Mint, payer.publicKey)
 
   const instructions: TransactionInstruction[] = []
 
   if (direction === 'buy') {
-    // Buy flow: WSOL -> USD1 (CLMM) -> Token (Launchpad)
-
-    // Step 1: CLMM swap WSOL -> USD1
     const clmmSwap = await buildClmmSwapInstruction({
-      poolId,
       direction: 'buy',
+      baseMint: new PublicKey("So11111111111111111111111111111111111111112"),
+      quoteMint: new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"),
       amount: amountIn,
       payer: payer.publicKey,
       slippage: 0.01,
@@ -615,7 +625,6 @@ export const swap = async (
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
 
-    // Step 2: Launchpad swap USD1 -> Token
     const launchpadSwap = await buildLaunchpadSwapInstruction({
       tokenMint,
       quoteMint: usd1Mint,
@@ -629,12 +638,13 @@ export const swap = async (
     instructions.push(...launchpadSwap.setupInstructions)
     instructions.push(launchpadSwap.instruction)
 
-  } else {
-    console.log("direction===> ", direction)
-    // Sell flow: Token -> USD1 (Launchpad) -> WSOL (CLMM)
+    instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 })
+    )
 
-    // Step 1: Launchpad swap Token -> USD1
-    // Check token account balance first
+    return { instructions, poolId: clmmSwap.poolId }
+  } else {
     const tokenAccountInfo = await connection.getAccountInfo(tokenAccount)
     if (!tokenAccountInfo) {
       throw new Error(`Token account does not exist at ${tokenAccount.toBase58()}. Cannot sell tokens you don't have.`)
@@ -643,18 +653,10 @@ export const swap = async (
     const tokenAccountData = getDecodedATA(tokenAccountInfo)
     const tokenBalance = new BN(tokenAccountData.amount.toString())
 
-    // Get actual token decimals from mint
     const { getMint } = await import("@solana/spl-token")
     const mintInfo = await getMint(connection, tokenMint)
     const tokenDecimals = mintInfo.decimals
-
-    console.log(`Token decimals: ${tokenDecimals}`)
-
     const amountInTokens = new BN(Math.floor(amountIn * Math.pow(10, tokenDecimals)))
-
-    console.log(`Token account: ${tokenAccount.toBase58()}`)
-    console.log(`Token balance: ${tokenBalance.toString()} raw units (${tokenBalance.div(new BN(10).pow(new BN(tokenDecimals))).toString()} tokens)`)
-    console.log(`Amount to sell: ${amountInTokens.toString()} raw units (${amountIn} tokens, decimals: ${tokenDecimals})`)
 
     if (tokenBalance.lte(new BN(0))) {
       throw new Error(`Cannot sell: Token account has zero balance. Please buy tokens first using 'buy' direction.`)
@@ -668,13 +670,6 @@ export const swap = async (
       throw new Error(`Insufficient token balance. Have: ${tokenBalance.toString()} raw units, Need: ${amountInTokens.toString()} raw units`)
     }
 
-    // The RequireGtViolated error occurs when output amount is 0
-    // This happens when selling very small amounts that round to 0 USD1
-    // Try with larger amounts (e.g., 1.0 or more tokens) if you encounter this error
-    if (amountInTokens.lt(new BN(100000))) {
-      console.warn(`Warning: Selling a small amount (${amountInTokens.toString()} raw units = ${amountIn} tokens) may result in 0 USD1 output due to rounding. If you get RequireGtViolated error, try selling a larger amount (e.g., 1.0+ tokens).`)
-    }
-
     const launchpadSwap = await buildLaunchpadSwapInstruction({
       tokenMint,
       quoteMint: usd1Mint,
@@ -685,8 +680,6 @@ export const swap = async (
       payer: payer.publicKey,
     })
 
-    // Step 2: Simulate Launchpad swap to get actual USD1 output
-    // Build a temporary transaction with just the Launchpad swap to simulate it
     const tempInstructions = [
       ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 }),
@@ -704,7 +697,6 @@ export const swap = async (
     const tempTransaction = new VersionedTransaction(tempMessageV0)
     tempTransaction.sign([payer])
 
-    // Simulate the Launchpad swap to get actual USD1 output
     const simulation = await connection.simulateTransaction(tempTransaction, {
       replaceRecentBlockhash: true,
       sigVerify: false,
@@ -714,114 +706,80 @@ export const swap = async (
       throw new Error(`Launchpad swap simulation failed: ${JSON.stringify(simulation.value.err)}`)
     }
 
-    // Extract USD1 output from simulation
-    const usd1Decimals = 6 // USD1 has 6 decimals
+    const usd1Decimals = 6
     let actualUsd1Amount = 0
-
-    if (simulation.value.logs) {
-      console.log("Launchpad swap simulation logs:", simulation.value.logs)
-    }
-
-    // Get postTokenBalances from simulation to find USD1 output
     const simulationValue = simulation.value as any
-    
-    // Log all token balances for debugging
-    console.log("Pre token balances:", JSON.stringify(simulationValue.preTokenBalances, null, 2))
-    console.log("Post token balances:", JSON.stringify(simulationValue.postTokenBalances, null, 2))
-    
-    // Get pre and post balances for USD1 account
+
     const preUsd1Balance = simulationValue.preTokenBalances?.find(
-      (balance: any) => balance.owner === payer.publicKey.toBase58() && 
-                       balance.mint === usd1Mint.toBase58()
+      (balance: any) => balance.owner === payer.publicKey.toBase58() &&
+        balance.mint === usd1Mint.toBase58()
     )
     const postUsd1Balance = simulationValue.postTokenBalances?.find(
-      (balance: any) => balance.owner === payer.publicKey.toBase58() && 
-                       balance.mint === usd1Mint.toBase58()
+      (balance: any) => balance.owner === payer.publicKey.toBase58() &&
+        balance.mint === usd1Mint.toBase58()
     )
 
     if (postUsd1Balance) {
-      // Try to use uiAmount if available (human-readable), otherwise calculate from raw amount
-      const postAmountRaw = new BN(postUsd1Balance.uiTokenAmount.amount)
-      const preAmountRaw = preUsd1Balance ? new BN(preUsd1Balance.uiTokenAmount.amount) : new BN(0)
-      const usd1OutputRaw = postAmountRaw.sub(preAmountRaw)
-      
-      // Check if uiAmount is available (more reliable)
-      let postAmountUi = postUsd1Balance.uiTokenAmount.uiAmount
-      let preAmountUi = preUsd1Balance?.uiTokenAmount?.uiAmount ?? 0
-      
+      const postAmountUi = postUsd1Balance.uiTokenAmount.uiAmount
+      const preAmountUi = preUsd1Balance?.uiTokenAmount?.uiAmount ?? 0
+
       if (postAmountUi !== null && postAmountUi !== undefined) {
-        // Use uiAmount if available (already in human-readable format)
         actualUsd1Amount = postAmountUi - preAmountUi
-        console.log(`Using uiAmount from simulation - Pre: ${preAmountUi} USD1, Post: ${postAmountUi} USD1, Output: ${actualUsd1Amount} USD1`)
       } else {
-        // Fallback to calculating from raw amount
+        const postAmountRaw = new BN(postUsd1Balance.uiTokenAmount.amount)
+        const preAmountRaw = preUsd1Balance ? new BN(preUsd1Balance.uiTokenAmount.amount) : new BN(0)
+        const usd1OutputRaw = postAmountRaw.sub(preAmountRaw)
         actualUsd1Amount = usd1OutputRaw.toNumber() / Math.pow(10, usd1Decimals)
-        console.log(`Calculated from raw amount - Pre: ${preAmountRaw.toString()}, Post: ${postAmountRaw.toString()}, Output: ${usd1OutputRaw.toString()} raw units (${actualUsd1Amount} USD1)`)
       }
-      
-      console.log(`Pre USD1 balance: ${preAmountRaw.toString()} raw units (${preAmountRaw.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
-      console.log(`Post USD1 balance: ${postAmountRaw.toString()} raw units (${postAmountRaw.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
-      console.log(`USD1 output from Launchpad swap: ${usd1OutputRaw.toString()} raw units (${actualUsd1Amount} USD1)`)
-      console.log(`Will use ${actualUsd1Amount} USD1 for CLMM swap`)
-    } else if (preUsd1Balance) {
-      // Account existed before but not after - this shouldn't happen, but handle it
-      console.warn(`USD1 account existed before but not found in postTokenBalances`)
-    } else {
-      // Account didn't exist before - check if it was created
-      console.warn(`USD1 account not found in simulation balances. It may have been created but balance is 0.`)
     }
 
-    // If we couldn't get the amount from simulation, try to get it from the account directly
-    // after a dry-run, or use a calculation based on the bonding curve
-    if (actualUsd1Amount === 0) {
-      console.warn("Could not determine USD1 output from simulation. Checking account balance...")
-      // As a fallback, we could check the quoteTokenAccount balance, but it might not exist yet
-      // For now, we'll use a very small amount to avoid the insufficient funds error
-      // The user should ensure they have enough USD1 from the Launchpad swap
-      actualUsd1Amount = 0.01 // Very conservative fallback
-      console.warn(`Using fallback USD1 amount: ${actualUsd1Amount} USD1`)
-    }
-
-    // Ensure we have a minimum amount
     if (actualUsd1Amount <= 0) {
       throw new Error(`Invalid USD1 output from Launchpad swap: ${actualUsd1Amount}. The swap may have failed or produced 0 output.`)
     }
 
-    console.log(`Using actual USD1 amount from Launchpad swap: ${actualUsd1Amount} USD1 for CLMM swap`)
-    console.log(`This amount will be converted to raw units: ${actualUsd1Amount * Math.pow(10, usd1Decimals)} raw units`)
-    
-    // Step 3: CLMM swap USD1 -> WSOL using actual amount from Launchpad swap
-    console.log(`Building CLMM swap instruction with amount: ${actualUsd1Amount} USD1`)
     const clmmSwap = await buildClmmSwapInstruction({
-      poolId,
       direction: 'sell',
-      amount: actualUsd1Amount, // Use actual amount from Launchpad swap
+      baseMint: new PublicKey("So11111111111111111111111111111111111111112"),
+      quoteMint: new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"),
+      amount: actualUsd1Amount,
       payer: payer.publicKey,
       slippage: 0.01,
     })
-    console.log(`CLMM swap built. AmountIn (raw): ${clmmSwap.expectedOutput ? 'calculated' : 'not calculated'}`)
 
-    // Build the full transaction with both swaps
     instructions.push(...launchpadSwap.setupInstructions)
     instructions.push(launchpadSwap.instruction)
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
+
+    instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 })
+    )
+
+    return { instructions, poolId: clmmSwap.poolId }
   }
+}
 
-  // Add compute budget
-  instructions.unshift(
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 })
-  )
+export const swap = async (
+  direction: SwapDirection = 'buy',
+  amountIn: number = swapAmount,
+  tokenMint: PublicKey
 
-  // Fetch pool info for lookup table
+) => {
+
+
+  const { instructions, poolId } = await buildSwapInstructions({
+    direction,
+    amountIn,
+    tokenMint,
+  })
+
   const raydium = await initSdk()
   const poolData = await raydium.clmm.getPoolInfoFromRpc(poolId.toBase58())
   if (!poolData) {
     throw new Error("Pool not found")
   }
 
-  // Build transaction
   const latestBlockhash = await connection.getLatestBlockhash()
   let lookupTables: AddressLookupTableAccount[] | undefined = undefined
 
@@ -844,13 +802,8 @@ export const swap = async (
     instructions,
   }).compileToV0Message(lookupTables)
 
-  console.log("instructions", instructions)
-
   const transaction = new VersionedTransaction(messageV0)
   transaction.sign([payer])
-
-  const txSize = transaction.serialize().length
-  console.log(`Transaction size 727: ${txSize} bytes`)
 
   try {
     const txid = await connection.sendTransaction(transaction)
@@ -865,7 +818,6 @@ export const swap = async (
 
     return txid
   } catch (error: any) {
-    // Check for RequireGtViolated error (0x9c9 = 2505) - output amount is 0
     if (error?.transactionLogs?.some((log: string) =>
       log.includes('RequireGtViolated') ||
       log.includes('0x9c9') ||
