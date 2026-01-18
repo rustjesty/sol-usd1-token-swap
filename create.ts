@@ -23,7 +23,8 @@ import {
   VersionedTransaction,
   SystemProgram,
   Transaction,
-  sendAndConfirmTransaction
+  sendAndConfirmTransaction,
+  TransactionInstruction
 } from "@solana/web3.js";
 import { initSdk, MAIN_KP } from "./config";
 import { ApiV3Token, getPdaLaunchpadConfigId, initialize, initializeV2, LAUNCHPAD_PROGRAM, LaunchpadConfig, LaunchpadPoolInitParam, TxVersion, CpmmCreatorFeeOn, getPdaLaunchpadPoolId, getPdaLaunchpadVaultId, buyExactInInstruction, getPdaCreatorVault, getPdaPlatformVault } from "@raydium-io/raydium-sdk-v2";
@@ -32,7 +33,8 @@ import base58 from "bs58";
 import { BN } from "bn.js";
 import { readFile } from "fs/promises";
 import { openAsBlob } from "fs";
-import { buildSwapInstructions } from "./swap";
+import { buildClmmSwapInstruction, buildSwapInstructions } from "./swap";
+import { buildTradeTransaction } from "./trade";
 
 
 export const IMAGE_URL = "./public/slx.png"
@@ -335,82 +337,93 @@ export const createTokenTxV2 = async (connection: Connection, payer: Keypair, mi
       CpmmCreatorFeeOn.OnlyTokenB
     )
 
-    const instructions = [tokenCreateInstruction]
-
+    const instructions: TransactionInstruction[] = [tokenCreateInstruction]
+    // const instructions: TransactionInstruction[] = []
     const creatorVault = getPdaCreatorVault(LAUNCHPAD_PROGRAM, payer.publicKey, usd1Mint).publicKey
     const userTokenAccountA = getAssociatedTokenAddressSync(mintKp.publicKey, payer.publicKey)
     const userTokenAccountB = getAssociatedTokenAddressSync(usd1Mint, payer.publicKey)
-  
-    // Check USD1 account balance for buy instruction
-    let usd1Balance = new BN(0)
-    try {
-      const usd1Account = await getAccount(connection, userTokenAccountB)
-      usd1Balance = new BN(usd1Account.amount.toString())
-      console.log(`USD1 account balance: ${usd1Balance.toString()} raw units (${usd1Balance.toNumber() / Math.pow(10, 6)} USD1)`)
-    } catch (error) {
-      console.log("USD1 account doesn't exist yet or has zero balance")
-    }
+
 
     // For newly created Launchpad pools, minimum buy is typically 1 USD1 or more
     // Only include buy instruction if we have sufficient balance
     const usd1Decimals = 6
     const minRequiredBuyAmount = new BN(1 * Math.pow(10, usd1Decimals)) // 1 USD1 minimum for newly created pool
-    
-    if (usd1Balance.gte(minRequiredBuyAmount)) {
-      // Create token account for receiving tokens before buy
-      const tokenAccountAInfo = await connection.getAccountInfo(userTokenAccountA)
-      if (!tokenAccountAInfo) {
-        instructions.push(
-          createAssociatedTokenAccountIdempotentInstruction(
-            payer.publicKey,
-            userTokenAccountA,
-            payer.publicKey,
-            mintKp.publicKey
-          )
-        )
-      }
 
-      const tokenAccountBInfo = await connection.getAccountInfo(userTokenAccountB)
-      if (!tokenAccountBInfo) {
-        instructions.push(
-          createAssociatedTokenAccountIdempotentInstruction(
-            payer.publicKey,
-            userTokenAccountB,
-            payer.publicKey,
-            usd1Mint
-          )
-        )
-      }
+    const tokenMint = new PublicKey("CPgobeEZLk82DdXqWxBiwvvE2tkQwDd12AuR1V8TqwXu");
+    const { instructions: tradeInstructions } = await buildTradeTransaction({
+      baseMint: mintKp.publicKey,
+      quoteMint: usd1Mint,
+      direction: "buy",
+      amountIn: new BN(0.001 * Math.pow(10, 6)),
+      minimumAmountOut: new BN(0), // No slippage protection for testing
+      payer: MAIN_KP,
+      shareFeeRate: new BN(0),
+      deployer: MAIN_KP.publicKey
+    })
 
-      // Use 1 USD1 for buy (safe minimum for newly created pools)
-      const buyAmount = minRequiredBuyAmount
-      console.log(`Including buy instruction with amount: ${buyAmount.toString()} raw units (${buyAmount.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
-      
-      const buyInstruction = buyExactInInstruction(
-        LAUNCHPAD_PROGRAM,
-        payer.publicKey,
-        authProgramId,
-        configId,
-        platformId,
-        poolId,
-        userTokenAccountA, // Receives token (output, mintA)
-        userTokenAccountB, // Has quote token (input, mintB)
-        vaultA,
-        vaultB,
-        mintKp.publicKey, // mintA: token being bought
-        usd1Mint, // mintB: input token (quote token)
-        TOKEN_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        platformVault,
-        creatorVault,
-        buyAmount,
-        new BN(0), // Minimum tokens to receive
-      )
-      instructions.push(buyInstruction)
-    } else {
-      console.log(`Skipping buy instruction - insufficient USD1 balance. Have: ${usd1Balance.toString()} raw units (${usd1Balance.toNumber() / Math.pow(10, usd1Decimals)} USD1), Need at least: ${minRequiredBuyAmount.toString()} raw units (${minRequiredBuyAmount.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
-      console.log(`Token will be created but no buy will be executed. Please add more USD1 and buy separately.`)
-    }
+    instructions.push(...tradeInstructions)
+
+    // // Create token account for receiving tokens before buy
+    // const tokenAccountAInfo = await connection.getAccountInfo(userTokenAccountA)
+    // if (!tokenAccountAInfo) {
+    //   instructions.push(
+    //     createAssociatedTokenAccountIdempotentInstruction(
+    //       payer.publicKey,
+    //       userTokenAccountA,
+    //       payer.publicKey,
+    //       mintKp.publicKey
+    //     )
+    //   )
+    // }
+
+    // const tokenAccountBInfo = await connection.getAccountInfo(userTokenAccountB)
+    // if (!tokenAccountBInfo) {
+    //   instructions.push(
+    //     createAssociatedTokenAccountIdempotentInstruction(
+    //       payer.publicKey,
+    //       userTokenAccountB,
+    //       payer.publicKey,
+    //       usd1Mint
+    //     )
+    //   )
+    // }
+
+    // // Use 1 USD1 for buy (safe minimum for newly created pools)
+    // const buyAmount = minRequiredBuyAmount
+    // console.log(`Including buy instruction with amount: ${buyAmount.toString()} raw units (${buyAmount.toNumber() / Math.pow(10, usd1Decimals)} USD1)`)
+
+    // // const clmmSwap = await buildClmmSwapInstruction({
+    // //   direction: 'buy',
+    // //   baseMint: new PublicKey("So11111111111111111111111111111111111111112"),
+    // //   quoteMint: new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"),
+    // //   amount: 0.001,
+    // //   payer: payer.publicKey,
+    // //   slippage: 0.01,
+    // // })
+    // // instructions.push(...clmmSwap.setupInstructions)
+    // // instructions.push(clmmSwap.instruction)
+
+    // const buyInstruction = buyExactInInstruction(
+    //   LAUNCHPAD_PROGRAM,
+    //   payer.publicKey,
+    //   authProgramId,
+    //   configId,
+    //   platformId,
+    //   poolId,
+    //   userTokenAccountA, // Receives token (output, mintA)
+    //   userTokenAccountB, // Has quote token (input, mintB)
+    //   vaultA,
+    //   vaultB,
+    //   mintKp.publicKey, // mintA: token being bought
+    //   usd1Mint, // mintB: input token (quote token)
+    //   TOKEN_PROGRAM_ID,
+    //   TOKEN_PROGRAM_ID,
+    //   platformVault,
+    //   creatorVault,
+    //   new BN(0.001 * Math.pow(10, 6)),
+    //   new BN(1), // Minimum tokens to receive
+    // )
+    // instructions.push(buyInstruction)
 
     // Estimate transaction size before building
     // Rough estimate: each instruction account = 32 bytes, instruction data varies
@@ -452,6 +465,9 @@ export const createTokenTxV2 = async (connection: Connection, payer: Keypair, mi
       console.warn("Failed to fetch lookup table:", error)
     }
     console.log("lookupTables", lookupTables)
+
+    console.log("instructions", instructions)
+
     const messageV0 = new TransactionMessage({
       payerKey: payer.publicKey,
       recentBlockhash: latestBlockhash.blockhash,
@@ -483,12 +499,12 @@ export const createTokenTxV2 = async (connection: Connection, payer: Keypair, mi
     }
 
     console.log("simulation: ", await connection.simulateTransaction(transaction))
-    const signature = await connection.sendTransaction(transaction, {
-      skipPreflight: true
-    })
-    console.log("signature", signature)
+    // const signature = await connection.sendTransaction(transaction, {
+    //   skipPreflight: true
+    // })
+    // console.log("signature", signature)
 
-    return signature
+    // return signature
 
   } catch (error) {
     console.error("createTokenTx error:", error);
@@ -537,14 +553,13 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
 
     // Set up transaction parameters
     // buyAmount is in quote token (USD1) units, so use mintB decimals (6 for USD1)
-    const buyAmount = 0.455; // 0.001 USD1
-    const buyAmountBN = new BN(buyAmount * Math.pow(10, mintBInfo.decimals))
+    const buyAmount = 0.001; // 0.001 USD1
+    const buyAmountBN = new BN(Math.floor(buyAmount * Math.pow(10, mintBInfo.decimals)))
     console.log(`Buy amount: ${buyAmount} ${mintBInfo.symbol} = ${buyAmountBN.toString()} raw units (decimals: ${mintBInfo.decimals})`)
-    const slippageAmount = 0.1;
+    const slippageAmount = 0;
     const slippage = new BN(slippageAmount * 100);
     const buffer = await readFile(IMAGE_URL);
     const blob = new Blob([new Uint8Array(buffer)]);
-
 
     const file = await openAsBlob(IMAGE_URL)
 
@@ -571,6 +586,20 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
 
     // Create launchpad transaction
 
+    let instructions: TransactionInstruction[] = [];
+
+
+    const clmmSwap = await buildClmmSwapInstruction({
+      direction: 'buy',
+      baseMint: new PublicKey("So11111111111111111111111111111111111111112"),
+      quoteMint: new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"),
+      amount: 0.001,
+      payer: payer.publicKey,
+      slippage: 0.01,
+    })
+    instructions.push(...clmmSwap.setupInstructions)
+    instructions.push(clmmSwap.instruction)
+
     const { execute, transactions, extInfo } = await raydium.launchpad.createLaunchpad({
       programId: LAUNCHPAD_PROGRAM,
       mintA: mintKp.publicKey,
@@ -584,9 +613,10 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
       mintBDecimals: mintBInfo.decimals, // Use decimals from config response
 
       platformId: newMintData.platformId,
-      txVersion: TxVersion.V0,
+      txVersion: TxVersion.LEGACY,
       slippage: slippage, // means 1%
-      buyAmount: buyAmountBN,
+      // buyAmount: buyAmountBN,
+      buyAmount: clmmSwap.expectedOutput,
       createOnly: buyAmount <= 0, // true means create mint only, false will "create and buy together"
 
       supply: newMintData.supply, // lauchpad mint supply amount, default: LaunchpadPoolInitParam.supply
@@ -598,12 +628,18 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
       initV2: true,
     });
 
-    console.log("extInfo", extInfo)
-    console.log("extInfo======>", extInfo)
-    const amountA = extInfo.swapInfo.amountA.amount.toString()
-    console.log("amountA======>", amountA)
-    const amountB = extInfo.swapInfo.amountB.toString()
-    console.log("amountB======>", amountB)
+    // Extract swap amounts with null safety
+    const amountA = extInfo?.swapInfo?.amountA?.amount?.toString() ?? "0"
+    const amountB = extInfo?.swapInfo?.amountB?.toString() ?? "0"
+    
+    // Log swap information for debugging
+    if (extInfo?.swapInfo) {
+      console.log("Swap info:", {
+        amountA,
+        amountB,
+        extInfo: extInfo.swapInfo,
+      })
+    }
     const tipAccounts = [
       "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
       "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
@@ -623,12 +659,29 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
 
     console.log("transactions", transactions)
 
-    const transaction: VersionedTransaction = transactions[0]
 
-    // Set the recent blockhash before signing
-    // transaction.message.recentBlockhash = blockhash;
 
-    transaction.sign([payer, mintKp]);
+    instructions.push(...transactions[0].instructions)
+
+    // const transaction: VersionedTransaction = transactions[0]
+    let lookupTables: AddressLookupTableAccount[] | undefined = undefined
+    const lutAddress = new PublicKey("4n2KqqgWJcjqJ4U7SVqL8tduhoFZwu15EzjBYjRGmgA7")
+    try {
+      const lookupTableAccount = await connection.getAddressLookupTable(lutAddress)
+      if (lookupTableAccount.value) {
+        lookupTables = [lookupTableAccount.value]
+      }
+    } catch (error) {
+      console.warn("Failed to fetch lookup table:", error)
+    }
+    const latestBlockhash = await connection.getLatestBlockhash()
+    const messageV0 = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions,
+    }).compileToV0Message(lookupTables)
+
+    const transaction = new VersionedTransaction(messageV0)
 
     // Add simulation options to get more detailed error information
     console.log("simulation", await connection.simulateTransaction(transaction, {
@@ -637,12 +690,12 @@ export const createTokenTxV1 = async (connection: Connection, payer: Keypair, mi
     }))
 
 
-    // transaction.sign([payer, mintKp]);
-    // const signature = await connection.sendTransaction(transaction)
-    // console.log("signature", signature)
+    transaction.sign([payer, mintKp]);
+    const signature = await connection.sendTransaction(transaction)
+    console.log("signature", signature)
 
-    // const confirmation = await connection.confirmTransaction(signature)
-    // console.log("confirmation", confirmation);
+    const confirmation = await connection.confirmTransaction(signature)
+    console.log("confirmation", confirmation);
 
     return transaction;
   } catch (error) {
