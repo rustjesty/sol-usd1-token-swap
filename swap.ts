@@ -20,7 +20,8 @@ import {
   syncNative,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  NATIVE_MINT
+  NATIVE_MINT,
+  createCloseAccountInstruction
 } from "@solana/spl-token"
 import { connection, MAIN_KP, initSdk } from "./config"
 import BN from "bn.js"
@@ -251,6 +252,9 @@ export const buildClmmSwapInstruction = async (
       slippage,
       epochInfo: await raydium.fetchEpochInfo(),
     })
+
+    console.log("exactAmountOut", exactAmountOut.amount.raw.toString())
+    console.log("minAmountOut", minAmountOut.amount.raw.toString())
 
     uniqueTickArrays = remainingAccountsExact.map(acc => acc as PublicKey)
     expectedSwapOutput = exactAmountOut.amount.raw
@@ -541,6 +545,14 @@ export const buildLaunchpadSwapInstruction = async (
   const outputAccountExists = !!outputAccountInfo
   if (!outputAccountExists) {
     const outputMint = direction === 'buy' ? tokenMint : quoteMint
+
+    console.log(
+      "setupInstructions.push",
+      payer.toBase58(),
+      outputTokenAccount.toBase58(),
+      payer.toBase58(),
+      outputMint.toBase58())
+
     setupInstructions.push(
       createAssociatedTokenAccountIdempotentInstruction(
         payer,
@@ -556,7 +568,12 @@ export const buildLaunchpadSwapInstruction = async (
 
   if (direction === 'buy') {
     // Buy instruction: swap quote token for token
-    instruction = buyExactInInstruction(
+    console.log("mintA", mintA.toBase58())
+    console.log("mintB", mintB.toBase58())
+    console.log("vaultA", vaultA.toBase58())
+    console.log("vaultB", vaultB.toBase58())
+    // buyExactInInstruction
+    console.log(
       launchpadProgramId,
       payer,
       authProgramId,
@@ -574,6 +591,29 @@ export const buildLaunchpadSwapInstruction = async (
       platformVault,
       creatorVault,
       amountIn, // Amount of quote token to spend
+      // new BN(1000),
+      minAmountOut
+    )
+
+    instruction = buyExactInInstruction(
+      launchpadProgramId,
+      payer,
+      authProgramId,
+      configId,
+      platformId,
+      poolId,
+      userTokenAccountA, // Receives token (output, mintA)
+      userTokenAccountB, // Has quote token (input, mintB)
+      vaultA,
+      vaultB,
+      mintA, // mintA: token being bought
+      mintB, // mintB: input token (quote token)
+      TOKEN_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      platformVault,
+      creatorVault,
+      // amountIn, // Amount of quote token to spend
+      new BN(1000),
       minAmountOut, // Minimum tokens to receive
     )
   } else {
@@ -639,14 +679,17 @@ export const buildSwapInstructions = async (
       quoteMint: new PublicKey("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"),
       amount: amountIn,
       payer: payer.publicKey,
-      slippage: 0.01,
+      slippage: 0,
     })
 
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
 
     inputTokenAccount = clmmSwap.outputTokenAccount
-    amountInForLaunchpad = clmmSwap.expectedOutput
+    console.log("clmmSwap.expectedOutput", clmmSwap.expectedOutput.toString())
+    console.log("clmmSwap.amountOutMin", clmmSwap.amountOutMin.toString())
+    amountInForLaunchpad = clmmSwap.amountOutMin
+
     if (isDevBuy) {
       // For dev buy, skip CLMM swap and use existing USD1
       inputTokenAccount = quoteTokenAccount
@@ -663,7 +706,6 @@ export const buildSwapInstructions = async (
       }
       clmmPoolId = foundPoolId
     } else {
-      // Normal buy flow: CLMM swap WSOL -> USD1, then Launchpad swap USD1 -> Token
 
       clmmPoolId = clmmSwap.poolId
     }
@@ -685,8 +727,9 @@ export const buildSwapInstructions = async (
     instructions.push(...launchpadSwap.setupInstructions)
     instructions.push(launchpadSwap.instruction)
 
-    console.log("instructions", instructions)
-    return { instructions}
+    console.log("instructions", instructions.length)
+    // console.log("instructions", instructions)
+    return { instructions }
   } else {
     const tokenAccountInfo = await connection.getAccountInfo(tokenAccount)
     if (!tokenAccountInfo) {
@@ -789,10 +832,14 @@ export const buildSwapInstructions = async (
       slippage: 0.01,
     })
 
+    const unwrapSolInstruction: TransactionInstruction = createCloseAccountInstruction(clmmSwap.outputTokenAccount, payer.publicKey, payer.publicKey)
+
+
     instructions.push(...launchpadSwap.setupInstructions)
     instructions.push(launchpadSwap.instruction)
     instructions.push(...clmmSwap.setupInstructions)
     instructions.push(clmmSwap.instruction)
+    instructions.push(unwrapSolInstruction)
 
     console.log("instructions", instructions)
     return { instructions }
@@ -824,6 +871,8 @@ export const swap = async (
 
   const transaction = new VersionedTransaction(messageV0)
   transaction.sign([payer])
+
+  console.log("simulation:", await connection.simulateTransaction(transaction))
 
   try {
     const txid = await connection.sendTransaction(transaction)

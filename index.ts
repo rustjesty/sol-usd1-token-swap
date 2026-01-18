@@ -14,7 +14,8 @@ import { connection, initSdk, MAIN_KP } from './config'
 import { CLMM_PROGRAM_ID, DEVNET_PROGRAM_ID } from '@raydium-io/raydium-sdk-v2'
 import { swap } from './swap'
 import { Keypair, PublicKey } from '@solana/web3.js'
-import { createTokenTxV2 } from './create'
+import { createTokenTxV1, createTokenTxV2, createTokenTxV3 } from './create'
+import { testSwapTransaction } from './trade'
 
 const VALID_PROGRAM_ID = new Set([CLMM_PROGRAM_ID.toBase58(), DEVNET_PROGRAM_ID.CLMM_PROGRAM_ID.toBase58()])
 export const txVersion = TxVersion.V0 // or TxVersion.LEGACY
@@ -27,10 +28,13 @@ const main = async () => {
   // // Buy: WSOL -> USD1 -> Token
 
   const isDevBuy = false;
-  // await swap('sell', 20000, tokenMint, isDevBuy)
+  await swap('sell', 228786, tokenMint, isDevBuy)
   const mintKp = Keypair.generate()
 
-  createTokenTxV2(connection, MAIN_KP, mintKp)
+  // await testSwapTransaction()
+
+  // createTokenTxV2(connection, MAIN_KP, mintKp)
+  // await createTokenTxV1(connection, MAIN_KP, mintKp)
 }
 
 main()
